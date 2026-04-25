@@ -21,24 +21,28 @@ function generateCode() {
   return Math.floor(10000 + Math.random() * 90000).toString();
 }
 
+app.get("/", (req, res) => {
+  res.send("Salon proxy server is running");
+});
+
 app.post("/sms-webhook", async (req, res) => {
   const from = req.body.From;
   const to = req.body.To;
   const body = (req.body.Body || "").trim();
 
   try {
-    const { data: client, error: clientError } = await supabase
-      .from("clients")
+    const { data: salon, error: salonError } = await supabase
+      .from("salons")
       .select("*")
       .eq("twilio_number", to)
       .single();
 
-    if (clientError || !client) {
-      console.error("Client lookup error:", clientError);
+    if (salonError || !salon) {
+      console.error("Salon lookup error:", salonError);
       return res.send("");
     }
 
-    const owner = client.owner_number;
+    const owner = salon.owner_phone;
 
     if (from === owner) {
       const match = body.match(/^@(\d{5})\s+([\s\S]+)/);
@@ -58,7 +62,7 @@ app.post("/sms-webhook", async (req, res) => {
       const { data: convo, error: convoError } = await supabase
         .from("conversations")
         .select("*")
-        .eq("client_id", client.id)
+        .eq("salon_id", salon.id)
         .eq("thread_code", code)
         .eq("status", "open")
         .single();
@@ -89,7 +93,7 @@ app.post("/sms-webhook", async (req, res) => {
     let { data: convo, error: convoLookupError } = await supabase
       .from("conversations")
       .select("*")
-      .eq("client_id", client.id)
+      .eq("salon_id", salon.id)
       .eq("customer_number", from)
       .eq("status", "open")
       .maybeSingle();
@@ -105,7 +109,7 @@ app.post("/sms-webhook", async (req, res) => {
       const { data, error: insertError } = await supabase
         .from("conversations")
         .insert({
-          client_id: client.id,
+          salon_id: salon.id,
           customer_number: from,
           thread_code: code,
           status: "open",
@@ -131,7 +135,7 @@ app.post("/sms-webhook", async (req, res) => {
       from: to,
       to: owner,
       body:
-        `[AUTO] ${client.salon_name} new message from ${from}\n` +
+        `[AUTO] ${salon.business_name} new message from ${from}\n` +
         `Reply: @${convo.thread_code} your message\n\n` +
         body,
     });
@@ -143,6 +147,7 @@ app.post("/sms-webhook", async (req, res) => {
   }
 });
 
-app.listen(process.env.PORT, () => {
-  console.log("Server running");
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on ${PORT}`);
 });
