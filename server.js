@@ -167,18 +167,18 @@ app.post("/voice-webhook", async (req, res) => {
       return res.type("text/xml").send("<Response></Response>");
     }
 
-    const twiml = `
-      <Response>
-        <Dial 
-          timeout="15"
-          action="https://salon-proxy.onrender.com/call-status?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}"
-          method="POST">
-          ${salon.owner_phone}
-        </Dial>
-      </Response>
-    `;
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const response = new VoiceResponse();
 
-    return res.type("text/xml").send(twiml);
+    const dial = response.dial({
+      timeout: 15,
+      action: `https://salon-proxy.onrender.com/call-status?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      method: "POST",
+    });
+
+    dial.number(salon.owner_phone);
+
+    return res.type("text/xml").send(response.toString());
   } catch (err) {
     console.error("Voice webhook error:", err);
     return res.type("text/xml").send("<Response></Response>");
