@@ -149,6 +149,41 @@ app.post("/sms-webhook", async (req, res) => {
   }
 });
 
+app.post("/voice-webhook", async (req, res) => {
+  const from = req.body.From;
+  const to = req.body.To;
+
+  try {
+    const { data: salon, error: salonError } = await supabase
+      .from("salons")
+      .select("*")
+      .eq("twilio_number", to)
+      .single();
+
+    if (salonError || !salon) {
+      console.error("Voice salon lookup error:", salonError);
+      return res.type("text/xml").send("<Response></Response>");
+    }
+
+    await twilioClient.messages.create({
+      from: to,
+      to: from,
+      body:
+        salon.open_message ||
+        "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.",
+    });
+
+    return res.type("text/xml").send(`
+      <Response>
+        <Say>Sorry we missed your call. We just sent you a text message.</Say>
+      </Response>
+    `);
+  } catch (err) {
+    console.error("Voice webhook error:", err);
+    return res.type("text/xml").send("<Response></Response>");
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on ${PORT}`);
