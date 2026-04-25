@@ -26,6 +26,8 @@ app.get("/", (req, res) => {
 });
 
 app.post("/sms-webhook", async (req, res) => {
+  console.log("SMS WEBHOOK HIT:", req.body);
+
   const from = req.body.From;
   const to = req.body.To;
   const body = (req.body.Body || "").trim();
