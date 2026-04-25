@@ -150,6 +150,8 @@ app.post("/sms-webhook", async (req, res) => {
 });
 
 app.post("/voice-webhook", async (req, res) => {
+  console.log("VOICE WEBHOOK HIT:", req.body);
+
   const from = req.body.From;
   const to = req.body.To;
 
