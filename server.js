@@ -167,6 +167,48 @@ app.post("/voice-webhook", async (req, res) => {
       return res.type("text/xml").send("<Response></Response>");
     }
 
+    const twiml = `
+      <Response>
+        <Dial 
+          timeout="15"
+          action="/call-status?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}"
+          method="POST">
+          ${salon.owner_phone}
+        </Dial>
+      </Response>
+    `;
+
+    return res.type("text/xml").send(twiml);
+  } catch (err) {
+    console.error("Voice webhook error:", err);
+    return res.type("text/xml").send("<Response></Response>");
+  }
+});
+
+app.post("/call-status", async (req, res) => {
+  console.log("CALL STATUS HIT:", req.body);
+
+  const from = req.query.from; // original caller
+  const to = req.query.to;     // Twilio number
+  const dialStatus = req.body.DialCallStatus;
+
+  try {
+    if (!["no-answer", "busy", "failed", "canceled"].includes(dialStatus)) {
+      console.log("Call was handled. No missed-call text sent.");
+      return res.type("text/xml").send("<Response></Response>");
+    }
+
+    const { data: salon, error: salonError } = await supabase
+      .from("salons")
+      .select("*")
+      .eq("twilio_number", to)
+      .single();
+
+    if (salonError || !salon) {
+      console.error("Call status salon lookup error:", salonError);
+      return res.type("text/xml").send("<Response></Response>");
+    }
+
     await twilioClient.messages.create({
       from: to,
       to: from,
@@ -181,7 +223,7 @@ app.post("/voice-webhook", async (req, res) => {
       </Response>
     `);
   } catch (err) {
-    console.error("Voice webhook error:", err);
+    console.error("Call status error:", err);
     return res.type("text/xml").send("<Response></Response>");
   }
 });
