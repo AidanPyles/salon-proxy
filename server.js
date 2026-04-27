@@ -21,6 +21,41 @@ function generateCode() {
   return Math.floor(10000 + Math.random() * 90000).toString();
 }
 
+function isSalonOpen(salon) {
+  const timezone = salon.timezone || "America/Los_Angeles";
+  const now = new Date();
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hour12: false,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(now);
+
+  const weekdayText = parts.find((p) => p.type === "weekday").value;
+  const hour = parts.find((p) => p.type === "hour").value;
+  const minute = parts.find((p) => p.type === "minute").value;
+
+  const dayMap = {
+    Sun: "0",
+    Mon: "1",
+    Tue: "2",
+    Wed: "3",
+    Thu: "4",
+    Fri: "5",
+    Sat: "6",
+  };
+
+  const today = dayMap[weekdayText];
+  const currentTime = `${hour}:${minute}`;
+  const openDays = (salon.open_days || "").split(",");
+
+  if (!openDays.includes(today)) return false;
+
+  return currentTime >= salon.open_time && currentTime <= salon.close_time;
+}
+
 app.get("/", (req, res) => {
   res.send("Salon proxy server is running");
 });
@@ -168,11 +203,28 @@ app.post("/voice-webhook", async (req, res) => {
     }
 
     const VoiceResponse = twilio.twiml.VoiceResponse;
+
+    if (!isSalonOpen(salon)) {
+      await twilioClient.messages.create({
+        from: to,
+        to: from,
+        body:
+          salon.closed_message ||
+          "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.",
+      });
+
+      const response = new VoiceResponse();
+      response.say("We are currently closed. We just sent you a text message.");
+      return res.type("text/xml").send(response.toString());
+    }
+
     const response = new VoiceResponse();
 
     const dial = response.dial({
       timeout: 15,
-      action: `https://salon-proxy.onrender.com/call-status?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      action: `https://salon-proxy.onrender.com/call-status?from=${encodeURIComponent(
+        from
+      )}&to=${encodeURIComponent(to)}`,
       method: "POST",
     });
 
@@ -188,8 +240,8 @@ app.post("/voice-webhook", async (req, res) => {
 app.post("/call-status", async (req, res) => {
   console.log("CALL STATUS HIT:", req.body);
 
-  const from = req.query.from; // original caller
-  const to = req.query.to;     // Twilio number
+  const from = req.query.from;
+  const to = req.query.to;
   const dialStatus = req.body.DialCallStatus;
 
   try {
@@ -217,11 +269,12 @@ app.post("/call-status", async (req, res) => {
         "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.",
     });
 
-    return res.type("text/xml").send(`
-      <Response>
-        <Say>Sorry we missed your call. We just sent you a text message.</Say>
-      </Response>
-    `);
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const response = new VoiceResponse();
+
+    response.say("Sorry we missed your call. We just sent you a text message.");
+
+    return res.type("text/xml").send(response.toString());
   } catch (err) {
     console.error("Call status error:", err);
     return res.type("text/xml").send("<Response></Response>");
