@@ -221,7 +221,7 @@ app.post("/voice-webhook", async (req, res) => {
     const response = new VoiceResponse();
 
     const dial = response.dial({
-      timeout: 15,
+      timeout: 8,
       action: `https://salon-proxy.onrender.com/call-status?from=${encodeURIComponent(
         from
       )}&to=${encodeURIComponent(to)}`,
