@@ -3,8 +3,20 @@ require("dotenv").config();
 const express = require("express");
 const twilio = require("twilio");
 const { createClient } = require("@supabase/supabase-js");
+const cors = require("cors");
 
 const app = express();
+
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:5174"
+  ],
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
+app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
 const twilioClient = twilio(
@@ -58,6 +70,69 @@ function isSalonOpen(salon) {
 
 app.get("/", (req, res) => {
   res.send("Salon proxy server is running");
+});
+
+app.post("/dashboard-send-message", async (req, res) => {
+  console.log("DASHBOARD SEND HIT:", req.body);
+
+  const { salon_id, customer_number, message } = req.body;
+
+  if (!salon_id || !customer_number || !message) {
+    return res.status(400).json({
+      success: false,
+      error: "Missing salon_id, customer_number, or message",
+    });
+  }
+
+  try {
+    const { data: salon, error: salonError } = await supabase
+      .from("salons")
+      .select("*")
+      .eq("id", salon_id)
+      .single();
+
+    if (salonError || !salon) {
+      console.error("Salon lookup error:", salonError);
+      return res.status(404).json({
+        success: false,
+        error: "Salon not found",
+      });
+    }
+
+    await twilioClient.messages.create({
+      from: salon.twilio_number,
+      to: customer_number,
+      body: message,
+    });
+
+    await supabase.from("message_logs").insert({
+      salon_id: salon.id,
+      direction: "outbound",
+      from_number: salon.twilio_number,
+      to_number: customer_number,
+      body: message,
+      created_at: new Date().toISOString(),
+    });
+
+    await supabase
+      .from("conversations")
+      .update({
+        last_owner_reply_at: new Date().toISOString(),
+      })
+      .eq("salon_id", salon.id)
+      .eq("customer_number", customer_number);
+
+    return res.json({
+      success: true,
+      message: "Message sent successfully",
+    });
+  } catch (err) {
+    console.error("Dashboard send error:", err);
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
 });
 
 app.post("/sms-webhook", async (req, res) => {
@@ -119,6 +194,16 @@ app.post("/sms-webhook", async (req, res) => {
         body: reply,
       });
 
+      await supabase.from("message_logs").insert({
+        salon_id: salon.id,
+        conversation_id: convo.id,
+        direction: "outbound",
+        from_number: to,
+        to_number: convo.customer_number,
+        body: reply,
+        created_at: new Date().toISOString(),
+      });
+
       await supabase
         .from("conversations")
         .update({ last_owner_reply_at: new Date().toISOString() })
@@ -167,6 +252,16 @@ app.post("/sms-webhook", async (req, res) => {
         .update({ last_customer_message_at: new Date().toISOString() })
         .eq("id", convo.id);
     }
+
+    await supabase.from("message_logs").insert({
+      salon_id: salon.id,
+      conversation_id: convo.id,
+      direction: "inbound",
+      from_number: from,
+      to_number: to,
+      body,
+      created_at: new Date().toISOString(),
+    });
 
     await twilioClient.messages.create({
       from: to,
