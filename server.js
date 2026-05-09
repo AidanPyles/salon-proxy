@@ -11,7 +11,8 @@ app.use(cors({
   origin: [
     "http://localhost:5173",
     "http://localhost:5174",
-    "https://pyles-inbox.vercel.app/"
+    "https://pyles-inbox.vercel.app/",
+    "https://inbox.pylesautomation.com"
   ],
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
