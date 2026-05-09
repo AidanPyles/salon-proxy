@@ -10,7 +10,7 @@ const app = express();
 app.use(cors({
   origin: [
     "http://localhost:5173",
-    "http://localhost:5174"
+    "http://localhost:5174",
     "https://pyles-inbox.vercel.app/"
   ],
   methods: ["GET", "POST", "OPTIONS"],
