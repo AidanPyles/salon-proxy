@@ -7,16 +7,19 @@ const cors = require("cors");
 
 const app = express();
 
-app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "http://localhost:5174",
-    "https://pyles-inbox.vercel.app/",
-    "https://inbox.pylesautomation.com"
-  ],
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "https://pyles-inbox.vercel.app",
+      "https://pyles-inbox.vercel.app/",
+      "https://inbox.pylesautomation.com",
+    ],
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -158,6 +161,7 @@ app.post("/sms-webhook", async (req, res) => {
 
     const owner = salon.owner_phone;
 
+    // OWNER REPLY FLOW
     if (from === owner) {
       const match = body.match(/^@(\d{5})\s+([\s\S]+)/);
 
@@ -167,6 +171,7 @@ app.post("/sms-webhook", async (req, res) => {
           to: owner,
           body: "Use: @12345 your reply",
         });
+
         return res.send("");
       }
 
@@ -187,6 +192,7 @@ app.post("/sms-webhook", async (req, res) => {
           to: owner,
           body: "Invalid code",
         });
+
         return res.send("");
       }
 
@@ -208,12 +214,15 @@ app.post("/sms-webhook", async (req, res) => {
 
       await supabase
         .from("conversations")
-        .update({ last_owner_reply_at: new Date().toISOString() })
+        .update({
+          last_owner_reply_at: new Date().toISOString(),
+        })
         .eq("id", convo.id);
 
       return res.send("");
     }
 
+    // CUSTOMER INBOUND MESSAGE FLOW
     let { data: convo, error: convoLookupError } = await supabase
       .from("conversations")
       .select("*")
@@ -237,6 +246,7 @@ app.post("/sms-webhook", async (req, res) => {
           customer_number: from,
           thread_code: code,
           status: "open",
+          unread_count: 1,
           last_customer_message_at: new Date().toISOString(),
         })
         .select()
@@ -249,10 +259,23 @@ app.post("/sms-webhook", async (req, res) => {
 
       convo = data;
     } else {
-      await supabase
+      const newUnreadCount = (convo.unread_count || 0) + 1;
+
+      const { data: updatedConvo, error: updateError } = await supabase
         .from("conversations")
-        .update({ last_customer_message_at: new Date().toISOString() })
-        .eq("id", convo.id);
+        .update({
+          unread_count: newUnreadCount,
+          last_customer_message_at: new Date().toISOString(),
+        })
+        .eq("id", convo.id)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error("Conversation unread update error:", updateError);
+      } else {
+        convo = updatedConvo;
+      }
     }
 
     await supabase.from("message_logs").insert({
@@ -312,6 +335,7 @@ app.post("/voice-webhook", async (req, res) => {
 
       const response = new VoiceResponse();
       response.say("We are currently closed. We just sent you a text message.");
+
       return res.type("text/xml").send(response.toString());
     }
 
@@ -379,6 +403,7 @@ app.post("/call-status", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
   console.log(`Server running on ${PORT}`);
 });
