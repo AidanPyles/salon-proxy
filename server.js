@@ -104,6 +104,8 @@ app.post("/dashboard-send-message", async (req, res) => {
       });
     }
 
+    const now = new Date().toISOString();
+
     await twilioClient.messages.create({
       from: salon.twilio_number,
       to: customer_number,
@@ -116,13 +118,14 @@ app.post("/dashboard-send-message", async (req, res) => {
       from_number: salon.twilio_number,
       to_number: customer_number,
       body: message,
-      created_at: new Date().toISOString(),
+      created_at: now,
     });
 
     await supabase
       .from("conversations")
       .update({
-        last_owner_reply_at: new Date().toISOString(),
+        last_owner_reply_at: now,
+        last_activity_at: now,
         last_message: message,
       })
       .eq("salon_id", salon.id)
@@ -178,6 +181,7 @@ app.post("/sms-webhook", async (req, res) => {
 
       const code = match[1];
       const reply = match[2];
+      const now = new Date().toISOString();
 
       const { data: convo, error: convoError } = await supabase
         .from("conversations")
@@ -210,13 +214,14 @@ app.post("/sms-webhook", async (req, res) => {
         from_number: to,
         to_number: convo.customer_number,
         body: reply,
-        created_at: new Date().toISOString(),
+        created_at: now,
       });
 
       await supabase
         .from("conversations")
         .update({
-          last_owner_reply_at: new Date().toISOString(),
+          last_owner_reply_at: now,
+          last_activity_at: now,
           last_message: reply,
         })
         .eq("id", convo.id);
@@ -225,6 +230,8 @@ app.post("/sms-webhook", async (req, res) => {
     }
 
     // CUSTOMER INBOUND MESSAGE FLOW
+    const now = new Date().toISOString();
+
     let { data: convo, error: convoLookupError } = await supabase
       .from("conversations")
       .select("*")
@@ -250,7 +257,8 @@ app.post("/sms-webhook", async (req, res) => {
           status: "open",
           unread_count: 1,
           last_message: body,
-          last_customer_message_at: new Date().toISOString(),
+          last_customer_message_at: now,
+          last_activity_at: now,
         })
         .select()
         .single();
@@ -269,7 +277,8 @@ app.post("/sms-webhook", async (req, res) => {
         .update({
           unread_count: newUnreadCount,
           last_message: body,
-          last_customer_message_at: new Date().toISOString(),
+          last_customer_message_at: now,
+          last_activity_at: now,
         })
         .eq("id", convo.id)
         .select()
@@ -289,7 +298,7 @@ app.post("/sms-webhook", async (req, res) => {
       from_number: from,
       to_number: to,
       body,
-      created_at: new Date().toISOString(),
+      created_at: now,
     });
 
     await twilioClient.messages.create({
