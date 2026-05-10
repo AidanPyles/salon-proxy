@@ -123,6 +123,7 @@ app.post("/dashboard-send-message", async (req, res) => {
       .from("conversations")
       .update({
         last_owner_reply_at: new Date().toISOString(),
+        last_message: message,
       })
       .eq("salon_id", salon.id)
       .eq("customer_number", customer_number);
@@ -216,6 +217,7 @@ app.post("/sms-webhook", async (req, res) => {
         .from("conversations")
         .update({
           last_owner_reply_at: new Date().toISOString(),
+          last_message: reply,
         })
         .eq("id", convo.id);
 
@@ -247,6 +249,7 @@ app.post("/sms-webhook", async (req, res) => {
           thread_code: code,
           status: "open",
           unread_count: 1,
+          last_message: body,
           last_customer_message_at: new Date().toISOString(),
         })
         .select()
@@ -265,6 +268,7 @@ app.post("/sms-webhook", async (req, res) => {
         .from("conversations")
         .update({
           unread_count: newUnreadCount,
+          last_message: body,
           last_customer_message_at: new Date().toISOString(),
         })
         .eq("id", convo.id)
