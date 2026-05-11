@@ -82,12 +82,14 @@ app.post("/dashboard-send-message", async (req, res) => {
 
   const { salon_id, customer_number, message } = req.body;
 
-  if (!salon_id || !customer_number || !message) {
+  if (!salon_id || !customer_number || !message || !message.trim()) {
     return res.status(400).json({
       success: false,
       error: "Missing salon_id, customer_number, or message",
     });
   }
+
+  const trimmedMessage = message.trim();
 
   try {
     const { data: salon, error: salonError } = await supabase
@@ -104,20 +106,37 @@ app.post("/dashboard-send-message", async (req, res) => {
       });
     }
 
+    const { data: convo, error: convoError } = await supabase
+      .from("conversations")
+      .select("*")
+      .eq("salon_id", salon.id)
+      .eq("customer_number", customer_number)
+      .eq("status", "open")
+      .single();
+
+    if (convoError || !convo) {
+      console.error("Dashboard conversation lookup error:", convoError);
+      return res.status(404).json({
+        success: false,
+        error: "Conversation not found",
+      });
+    }
+
     const now = new Date().toISOString();
 
     await twilioClient.messages.create({
       from: salon.twilio_number,
       to: customer_number,
-      body: message,
+      body: trimmedMessage,
     });
 
     await supabase.from("message_logs").insert({
       salon_id: salon.id,
+      conversation_id: convo.id,
       direction: "outbound",
       from_number: salon.twilio_number,
       to_number: customer_number,
-      body: message,
+      body: trimmedMessage,
       created_at: now,
     });
 
@@ -126,10 +145,9 @@ app.post("/dashboard-send-message", async (req, res) => {
       .update({
         last_owner_reply_at: now,
         last_activity_at: now,
-        last_message: message,
+        last_message: trimmedMessage,
       })
-      .eq("salon_id", salon.id)
-      .eq("customer_number", customer_number);
+      .eq("id", convo.id);
 
     return res.json({
       success: true,
@@ -180,7 +198,18 @@ app.post("/sms-webhook", async (req, res) => {
       }
 
       const code = match[1];
-      const reply = match[2];
+      const reply = match[2].trim();
+
+      if (!reply) {
+        await twilioClient.messages.create({
+          from: to,
+          to: owner,
+          body: "Your reply cannot be empty.",
+        });
+
+        return res.send("");
+      }
+
       const now = new Date().toISOString();
 
       const { data: convo, error: convoError } = await supabase
