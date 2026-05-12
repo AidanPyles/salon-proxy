@@ -73,6 +73,89 @@ function isSalonOpen(salon) {
   return currentTime >= salon.open_time && currentTime <= salon.close_time;
 }
 
+async function getOrCreateConversation(salon, customerNumber) {
+  let { data: convo, error: convoLookupError } = await supabase
+    .from("conversations")
+    .select("*")
+    .eq("salon_id", salon.id)
+    .eq("customer_number", customerNumber)
+    .eq("status", "open")
+    .maybeSingle();
+
+  if (convoLookupError) {
+    console.error("Conversation lookup error:", convoLookupError);
+    return null;
+  }
+
+  if (convo) return convo;
+
+  const code = generateCode();
+  const now = new Date().toISOString();
+
+  const { data, error: insertError } = await supabase
+    .from("conversations")
+    .insert({
+      salon_id: salon.id,
+      customer_number: customerNumber,
+      thread_code: code,
+      status: "open",
+      unread_count: 0,
+      last_activity_at: now,
+    })
+    .select()
+    .single();
+
+  if (insertError || !data) {
+    console.error("Conversation insert error:", insertError);
+    return null;
+  }
+
+  return data;
+}
+
+async function logAutomatedOutboundMessage({ salon, customerNumber, message }) {
+  const now = new Date().toISOString();
+
+  const convo = await getOrCreateConversation(salon, customerNumber);
+
+  if (!convo) {
+    console.error("Could not create/find conversation for automated message.");
+    return null;
+  }
+
+  const { error: logError } = await supabase.from("message_logs").insert({
+    salon_id: salon.id,
+    conversation_id: convo.id,
+    direction: "outbound",
+    from_number: salon.twilio_number,
+    to_number: customerNumber,
+    body: message,
+    created_at: now,
+  });
+
+  if (logError) {
+    console.error("Automated message log error:", logError);
+  }
+
+  const { data: updatedConvo, error: updateError } = await supabase
+    .from("conversations")
+    .update({
+      last_owner_reply_at: now,
+      last_activity_at: now,
+      last_message: message,
+    })
+    .eq("id", convo.id)
+    .select()
+    .single();
+
+  if (updateError) {
+    console.error("Automated conversation update error:", updateError);
+    return convo;
+  }
+
+  return updatedConvo;
+}
+
 app.get("/", (req, res) => {
   res.send("Salon proxy server is running");
 });
@@ -367,12 +450,20 @@ app.post("/voice-webhook", async (req, res) => {
     const VoiceResponse = twilio.twiml.VoiceResponse;
 
     if (!isSalonOpen(salon)) {
+      const closedMessage =
+        salon.closed_message ||
+        "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.";
+
       await twilioClient.messages.create({
         from: to,
         to: from,
-        body:
-          salon.closed_message ||
-          "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.",
+        body: closedMessage,
+      });
+
+      await logAutomatedOutboundMessage({
+        salon,
+        customerNumber: from,
+        message: closedMessage,
       });
 
       const response = new VoiceResponse();
@@ -424,12 +515,20 @@ app.post("/call-status", async (req, res) => {
       return res.type("text/xml").send("<Response></Response>");
     }
 
+    const missedCallMessage =
+      salon.open_message ||
+      "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.";
+
     await twilioClient.messages.create({
       from: to,
       to: from,
-      body:
-        salon.open_message ||
-        "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.",
+      body: missedCallMessage,
+    });
+
+    await logAutomatedOutboundMessage({
+      salon,
+      customerNumber: from,
+      message: missedCallMessage,
     });
 
     const VoiceResponse = twilio.twiml.VoiceResponse;
