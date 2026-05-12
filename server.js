@@ -113,6 +113,33 @@ async function getOrCreateConversation(salon, customerNumber) {
   return data;
 }
 
+async function hasRecentAutomatedOutboundMessage({
+  salon,
+  customerNumber,
+  message,
+  minutes = 5,
+}) {
+  const cutoffTime = new Date(Date.now() - minutes * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from("message_logs")
+    .select("id")
+    .eq("salon_id", salon.id)
+    .eq("direction", "outbound")
+    .eq("from_number", salon.twilio_number)
+    .eq("to_number", customerNumber)
+    .eq("body", message)
+    .gte("created_at", cutoffTime)
+    .limit(1);
+
+  if (error) {
+    console.error("Duplicate check error:", error);
+    return false;
+  }
+
+  return data && data.length > 0;
+}
+
 async function logAutomatedOutboundMessage({ salon, customerNumber, message }) {
   const now = new Date().toISOString();
 
@@ -154,6 +181,43 @@ async function logAutomatedOutboundMessage({ salon, customerNumber, message }) {
   }
 
   return updatedConvo;
+}
+
+async function sendAndLogAutomatedMessage({ salon, customerNumber, message }) {
+  const alreadySentRecently = await hasRecentAutomatedOutboundMessage({
+    salon,
+    customerNumber,
+    message,
+    minutes: 5,
+  });
+
+  if (alreadySentRecently) {
+    console.log(
+      `Skipped duplicate automated message to ${customerNumber}. Already sent in the last 5 minutes.`
+    );
+
+    return {
+      sent: false,
+      skippedDuplicate: true,
+    };
+  }
+
+  await twilioClient.messages.create({
+    from: salon.twilio_number,
+    to: customerNumber,
+    body: message,
+  });
+
+  await logAutomatedOutboundMessage({
+    salon,
+    customerNumber,
+    message,
+  });
+
+  return {
+    sent: true,
+    skippedDuplicate: false,
+  };
 }
 
 app.get("/", (req, res) => {
@@ -454,13 +518,7 @@ app.post("/voice-webhook", async (req, res) => {
         salon.closed_message ||
         "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.";
 
-      await twilioClient.messages.create({
-        from: to,
-        to: from,
-        body: closedMessage,
-      });
-
-      await logAutomatedOutboundMessage({
+      await sendAndLogAutomatedMessage({
         salon,
         customerNumber: from,
         message: closedMessage,
@@ -519,13 +577,7 @@ app.post("/call-status", async (req, res) => {
       salon.open_message ||
       "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.";
 
-    await twilioClient.messages.create({
-      from: to,
-      to: from,
-      body: missedCallMessage,
-    });
-
-    await logAutomatedOutboundMessage({
+    await sendAndLogAutomatedMessage({
       salon,
       customerNumber: from,
       message: missedCallMessage,
