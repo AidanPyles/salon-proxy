@@ -316,6 +316,21 @@ app.post("/sms-webhook", async (req, res) => {
   const to = req.body.To;
   const body = (req.body.Body || "").trim();
 
+  const numMedia = Number(req.body.NumMedia || 0);
+  const mediaUrls = [];
+  const mediaContentTypes = [];
+
+  for (let i = 0; i < numMedia; i++) {
+    if (req.body[`MediaUrl${i}`]) {
+      mediaUrls.push(req.body[`MediaUrl${i}`]);
+      mediaContentTypes.push(req.body[`MediaContentType${i}`] || "");
+    }
+  }
+
+  const hasMedia = mediaUrls.length > 0;
+  const displayBody = body || (hasMedia ? "[Image]" : "");
+  const messageType = hasMedia ? "media" : "text";
+
   try {
     const { data: salon, error: salonError } = await supabase
       .from("salons")
@@ -432,7 +447,7 @@ app.post("/sms-webhook", async (req, res) => {
           thread_code: code,
           status: "open",
           unread_count: 1,
-          last_message: body,
+          last_message: displayBody,
           last_customer_message_at: now,
           last_activity_at: now,
         })
@@ -452,7 +467,7 @@ app.post("/sms-webhook", async (req, res) => {
         .from("conversations")
         .update({
           unread_count: newUnreadCount,
-          last_message: body,
+          last_message: displayBody,
           last_customer_message_at: now,
           last_activity_at: now,
         })
@@ -473,7 +488,10 @@ app.post("/sms-webhook", async (req, res) => {
       direction: "inbound",
       from_number: from,
       to_number: to,
-      body,
+      body: displayBody,
+      media_urls: mediaUrls,
+      media_content_types: mediaContentTypes,
+      message_type: messageType,
       created_at: now,
     });
 
@@ -483,7 +501,7 @@ app.post("/sms-webhook", async (req, res) => {
       body:
         `[AUTO] ${salon.business_name} new message from ${from}\n` +
         `Reply: @${convo.thread_code} your message\n\n` +
-        body,
+        displayBody,
     });
 
     return res.send("");
