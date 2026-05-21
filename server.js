@@ -613,6 +613,59 @@ app.post("/call-status", async (req, res) => {
   }
 });
 
+app.get("/media-proxy", async (req, res) => {
+  try {
+    const mediaUrl = req.query.url;
+
+    if (!mediaUrl) {
+      return res.status(400).send("Missing media URL");
+    }
+
+    let parsedUrl;
+
+    try {
+      parsedUrl = new URL(mediaUrl);
+    } catch (error) {
+      return res.status(400).send("Invalid media URL");
+    }
+
+    const allowedHosts = ["api.twilio.com", "mcs.us1.twilio.com"];
+
+    if (!allowedHosts.includes(parsedUrl.hostname)) {
+      return res.status(403).send("Media host not allowed");
+    }
+
+    const auth = Buffer.from(
+      `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
+    ).toString("base64");
+
+    const mediaResponse = await fetch(mediaUrl, {
+      headers: {
+        Authorization: `Basic ${auth}`,
+      },
+    });
+
+    if (!mediaResponse.ok) {
+      console.error("MEDIA PROXY ERROR:", mediaResponse.status);
+      return res.status(mediaResponse.status).send("Failed to load media");
+    }
+
+    const contentType =
+      mediaResponse.headers.get("content-type") || "application/octet-stream";
+
+    const arrayBuffer = await mediaResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "private, max-age=3600");
+
+    return res.send(buffer);
+  } catch (error) {
+    console.error("MEDIA PROXY SERVER ERROR:", error);
+    return res.status(500).send("Media proxy error");
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
