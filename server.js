@@ -696,16 +696,22 @@ app.post("/sms-webhook", async (req, res) => {
       created_at: now,
     });
 
-    await twilioClient.messages.create({
-      from: to,
-      to: owner,
-      body:
-        `[AUTO] ${salon.business_name} new message from ${from}\n` +
-        `Reply: @${convo.thread_code} your message\n\n` +
-        displayBody,
-    });
+    if (salon.owner_sms_alerts_enabled !== false && owner) {
+  await twilioClient.messages.create({
+    from: to,
+    to: owner,
+    body:
+      `[AUTO] ${salon.business_name} new message from ${from}\n` +
+      `Reply: @${convo.thread_code} your message\n\n` +
+      displayBody,
+  });
+} else {
+  console.log(
+    `Owner SMS alert skipped for ${salon.business_name}. Alerts are disabled.`
+  );
+}
 
-    return res.send("");
+return res.send("");
   } catch (err) {
     console.error("Server error:", err);
     return res.send("");
