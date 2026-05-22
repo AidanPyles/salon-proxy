@@ -123,19 +123,41 @@ function isSalonOpen(salon) {
 
 async function getOrCreateConversation(salon, customerNumber) {
   let { data: convo, error: convoLookupError } = await supabase
-    .from("conversations")
-    .select("*")
-    .eq("salon_id", salon.id)
-    .eq("customer_number", customerNumber)
-    .eq("status", "open")
-    .maybeSingle();
+  .from("conversations")
+  .select("*")
+  .eq("salon_id", salon.id)
+  .eq("customer_number", customerNumber)
+  .order("last_activity_at", { ascending: false })
+  .limit(1)
+  .maybeSingle();
 
   if (convoLookupError) {
     console.error("Conversation lookup error:", convoLookupError);
     return null;
   }
 
-  if (convo) return convo;
+  if (convo) {
+  if (convo.status === "closed") {
+    const { data: reopenedConvo, error: reopenError } = await supabase
+      .from("conversations")
+      .update({
+        status: "open",
+        last_activity_at: now,
+      })
+      .eq("id", convo.id)
+      .select()
+      .single();
+
+    if (reopenError) {
+      console.error("Conversation reopen error:", reopenError);
+      return convo;
+    }
+
+    return reopenedConvo;
+  }
+
+  return convo;
+}
 
   const code = generateCode();
   const now = new Date().toISOString();
@@ -625,12 +647,13 @@ app.post("/sms-webhook", async (req, res) => {
     const now = new Date().toISOString();
 
     let { data: convo, error: convoLookupError } = await supabase
-      .from("conversations")
-      .select("*")
-      .eq("salon_id", salon.id)
-      .eq("customer_number", from)
-      .eq("status", "open")
-      .maybeSingle();
+  .from("conversations")
+  .select("*")
+  .eq("salon_id", salon.id)
+  .eq("customer_number", from)
+  .order("last_activity_at", { ascending: false })
+  .limit(1)
+  .maybeSingle();
 
     if (convoLookupError) {
       console.error("Conversation lookup error:", convoLookupError);
@@ -665,16 +688,17 @@ app.post("/sms-webhook", async (req, res) => {
       const newUnreadCount = (convo.unread_count || 0) + 1;
 
       const { data: updatedConvo, error: updateError } = await supabase
-        .from("conversations")
-        .update({
-          unread_count: newUnreadCount,
-          last_message: displayBody,
-          last_customer_message_at: now,
-          last_activity_at: now,
-        })
-        .eq("id", convo.id)
-        .select()
-        .single();
+  .from("conversations")
+  .update({
+    status: "open",
+    unread_count: newUnreadCount,
+    last_message: displayBody,
+    last_customer_message_at: now,
+    last_activity_at: now,
+  })
+  .eq("id", convo.id)
+  .select()
+  .single();
 
       if (updateError) {
         console.error("Conversation unread update error:", updateError);
