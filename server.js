@@ -86,9 +86,9 @@ function isSalonOpen(salon) {
     minute: "2-digit",
   }).formatToParts(now);
 
-  const weekdayText = parts.find((p) => p.type === "weekday").value;
-  const hour = parts.find((p) => p.type === "hour").value;
-  const minute = parts.find((p) => p.type === "minute").value;
+  const weekdayText = parts.find((p) => p.type === "weekday")?.value;
+  const hour = parts.find((p) => p.type === "hour")?.value;
+  const minute = parts.find((p) => p.type === "minute")?.value;
 
   const dayMap = {
     Sun: "0",
@@ -102,11 +102,23 @@ function isSalonOpen(salon) {
 
   const today = dayMap[weekdayText];
   const currentTime = `${hour}:${minute}`;
-  const openDays = (salon.open_days || "").split(",");
+  const openDays = String(salon.open_days || "")
+    .split(",")
+    .map((day) => day.trim())
+    .filter(Boolean);
 
-  if (!openDays.includes(today)) return false;
+  const openTime = salon.open_time || "09:00";
+  const closeTime = salon.close_time || "17:00";
 
-  return currentTime >= salon.open_time && currentTime <= salon.close_time;
+  if (!today || !openDays.includes(today)) return false;
+
+  // Normal same-day hours, example: 09:00 to 17:00
+  if (openTime <= closeTime) {
+    return currentTime >= openTime && currentTime <= closeTime;
+  }
+
+  // Overnight / almost-all-day hours, example: 09:00 to 08:59
+  return currentTime >= openTime || currentTime <= closeTime;
 }
 
 async function getOrCreateConversation(salon, customerNumber) {
