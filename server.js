@@ -75,6 +75,10 @@ function generateCode() {
 }
 
 function isSalonOpen(salon) {
+  if (salon.always_open === true) {
+    return true;
+  }
+
   const timezone = salon.timezone || "America/Los_Angeles";
   const now = new Date();
 
@@ -122,14 +126,16 @@ function isSalonOpen(salon) {
 }
 
 async function getOrCreateConversation(salon, customerNumber) {
+  const now = new Date().toISOString();
+
   let { data: convo, error: convoLookupError } = await supabase
-  .from("conversations")
-  .select("*")
-  .eq("salon_id", salon.id)
-  .eq("customer_number", customerNumber)
-  .order("last_activity_at", { ascending: false })
-  .limit(1)
-  .maybeSingle();
+    .from("conversations")
+    .select("*")
+    .eq("salon_id", salon.id)
+    .eq("customer_number", customerNumber)
+    .order("last_activity_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (convoLookupError) {
     console.error("Conversation lookup error:", convoLookupError);
@@ -137,30 +143,29 @@ async function getOrCreateConversation(salon, customerNumber) {
   }
 
   if (convo) {
-  if (convo.status === "closed") {
-    const { data: reopenedConvo, error: reopenError } = await supabase
-      .from("conversations")
-      .update({
-        status: "open",
-        last_activity_at: now,
-      })
-      .eq("id", convo.id)
-      .select()
-      .single();
+    if (convo.status === "closed") {
+      const { data: reopenedConvo, error: reopenError } = await supabase
+        .from("conversations")
+        .update({
+          status: "open",
+          last_activity_at: now,
+        })
+        .eq("id", convo.id)
+        .select()
+        .single();
 
-    if (reopenError) {
-      console.error("Conversation reopen error:", reopenError);
-      return convo;
+      if (reopenError) {
+        console.error("Conversation reopen error:", reopenError);
+        return convo;
+      }
+
+      return reopenedConvo;
     }
 
-    return reopenedConvo;
+    return convo;
   }
 
-  return convo;
-}
-
   const code = generateCode();
-  const now = new Date().toISOString();
 
   const { data, error: insertError } = await supabase
     .from("conversations")
@@ -237,6 +242,7 @@ async function logAutomatedOutboundMessage({ salon, customerNumber, message }) {
   const { data: updatedConvo, error: updateError } = await supabase
     .from("conversations")
     .update({
+      status: "open",
       last_owner_reply_at: now,
       last_activity_at: now,
       last_message: message,
@@ -317,6 +323,7 @@ app.post("/admin-create-client", async (req, res) => {
       open_days,
       open_time,
       close_time,
+      always_open,
       owner_sms_alerts_enabled,
       quick_replies,
     } = req.body;
@@ -377,6 +384,7 @@ app.post("/admin-create-client", async (req, res) => {
         open_days: open_days || "1,2,3,4,5",
         open_time: open_time || "09:00",
         close_time: close_time || "17:00",
+        always_open: always_open === true,
         active: true,
         owner_sms_alerts_enabled:
           owner_sms_alerts_enabled === false ? false : true,
@@ -647,13 +655,13 @@ app.post("/sms-webhook", async (req, res) => {
     const now = new Date().toISOString();
 
     let { data: convo, error: convoLookupError } = await supabase
-  .from("conversations")
-  .select("*")
-  .eq("salon_id", salon.id)
-  .eq("customer_number", from)
-  .order("last_activity_at", { ascending: false })
-  .limit(1)
-  .maybeSingle();
+      .from("conversations")
+      .select("*")
+      .eq("salon_id", salon.id)
+      .eq("customer_number", from)
+      .order("last_activity_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (convoLookupError) {
       console.error("Conversation lookup error:", convoLookupError);
@@ -688,17 +696,17 @@ app.post("/sms-webhook", async (req, res) => {
       const newUnreadCount = (convo.unread_count || 0) + 1;
 
       const { data: updatedConvo, error: updateError } = await supabase
-  .from("conversations")
-  .update({
-    status: "open",
-    unread_count: newUnreadCount,
-    last_message: displayBody,
-    last_customer_message_at: now,
-    last_activity_at: now,
-  })
-  .eq("id", convo.id)
-  .select()
-  .single();
+        .from("conversations")
+        .update({
+          status: "open",
+          unread_count: newUnreadCount,
+          last_message: displayBody,
+          last_customer_message_at: now,
+          last_activity_at: now,
+        })
+        .eq("id", convo.id)
+        .select()
+        .single();
 
       if (updateError) {
         console.error("Conversation unread update error:", updateError);
@@ -721,21 +729,21 @@ app.post("/sms-webhook", async (req, res) => {
     });
 
     if (salon.owner_sms_alerts_enabled !== false && owner) {
-  await twilioClient.messages.create({
-    from: to,
-    to: owner,
-    body:
-      `[AUTO] ${salon.business_name} new message from ${from}\n` +
-      `Reply: @${convo.thread_code} your message\n\n` +
-      displayBody,
-  });
-} else {
-  console.log(
-    `Owner SMS alert skipped for ${salon.business_name}. Alerts are disabled.`
-  );
-}
+      await twilioClient.messages.create({
+        from: to,
+        to: owner,
+        body:
+          `[AUTO] ${salon.business_name} new message from ${from}\n` +
+          `Reply: @${convo.thread_code} your message\n\n` +
+          displayBody,
+      });
+    } else {
+      console.log(
+        `Owner SMS alert skipped for ${salon.business_name}. Alerts are disabled.`
+      );
+    }
 
-return res.send("");
+    return res.send("");
   } catch (err) {
     console.error("Server error:", err);
     return res.send("");
