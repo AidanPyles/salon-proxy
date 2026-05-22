@@ -34,6 +34,42 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+async function getAdminUserFromRequest(req) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.replace("Bearer ", "");
+
+  if (!token) {
+    return null;
+  }
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser(token);
+
+  if (userError || !user) {
+    console.error("Admin auth user error:", userError);
+    return null;
+  }
+
+  const { data: adminUser, error: adminError } = await supabase
+    .from("admin_users")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (adminError) {
+    console.error("Admin lookup error:", adminError);
+    return null;
+  }
+
+  if (!adminUser) {
+    return null;
+  }
+
+  return user;
+}
+
 function generateCode() {
   return Math.floor(10000 + Math.random() * 90000).toString();
 }
@@ -222,6 +258,159 @@ async function sendAndLogAutomatedMessage({ salon, customerNumber, message }) {
 
 app.get("/", (req, res) => {
   res.send("Salon proxy server is running");
+});
+
+app.post("/admin-create-client", async (req, res) => {
+  try {
+    const adminUser = await getAdminUserFromRequest(req);
+
+    if (!adminUser) {
+      return res.status(403).json({
+        success: false,
+        error: "Not authorized",
+      });
+    }
+
+    const {
+      business_name,
+      owner_phone,
+      twilio_number,
+      booking_link,
+      client_user_id,
+      open_message,
+      closed_message,
+      timezone,
+      open_days,
+      open_time,
+      close_time,
+      owner_sms_alerts_enabled,
+      quick_replies,
+    } = req.body;
+
+    if (
+      !business_name ||
+      !business_name.trim() ||
+      !owner_phone ||
+      !owner_phone.trim() ||
+      !twilio_number ||
+      !twilio_number.trim() ||
+      !client_user_id ||
+      !client_user_id.trim()
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Business name, owner phone, Twilio number, and client user ID are required.",
+      });
+    }
+
+    const { data: existingSalon, error: existingSalonError } = await supabase
+      .from("salons")
+      .select("id")
+      .eq("twilio_number", twilio_number.trim())
+      .maybeSingle();
+
+    if (existingSalonError) {
+      console.error("Existing salon lookup error:", existingSalonError);
+      return res.status(500).json({
+        success: false,
+        error: "Could not check existing Twilio number.",
+      });
+    }
+
+    if (existingSalon) {
+      return res.status(409).json({
+        success: false,
+        error: "A salon with this Twilio number already exists.",
+      });
+    }
+
+    const { data: salon, error: salonError } = await supabase
+      .from("salons")
+      .insert({
+        business_name: business_name.trim(),
+        owner_phone: owner_phone.trim(),
+        twilio_number: twilio_number.trim(),
+        booking_link: booking_link?.trim() || "",
+        open_message:
+          open_message?.trim() ||
+          "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.",
+        closed_message:
+          closed_message?.trim() ||
+          "Hi! We're currently closed but will get back to you soon. Reply STOP to opt out.",
+        ring_timeout_seconds: 10,
+        timezone: timezone || "America/Los_Angeles",
+        open_days: open_days || "1,2,3,4,5",
+        open_time: open_time || "09:00",
+        close_time: close_time || "17:00",
+        active: true,
+        owner_sms_alerts_enabled:
+          owner_sms_alerts_enabled === false ? false : true,
+      })
+      .select()
+      .single();
+
+    if (salonError || !salon) {
+      console.error("Admin create salon error:", salonError);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to create salon.",
+      });
+    }
+
+    const { error: salonUserError } = await supabase
+      .from("salon_users")
+      .insert({
+        user_id: client_user_id.trim(),
+        salon_id: salon.id,
+      });
+
+    if (salonUserError) {
+      console.error("Admin create salon user error:", salonUserError);
+
+      await supabase.from("salons").delete().eq("id", salon.id);
+
+      return res.status(500).json({
+        success: false,
+        error:
+          "Salon was created, but linking the client user failed. Check the client user ID.",
+      });
+    }
+
+    const cleanedQuickReplies = Array.isArray(quick_replies)
+      ? quick_replies
+          .map((reply, index) => ({
+            salon_id: salon.id,
+            label: String(reply.label || "").trim(),
+            message: String(reply.message || "").trim(),
+            sort_order: index + 1,
+          }))
+          .filter((reply) => reply.label && reply.message)
+      : [];
+
+    if (cleanedQuickReplies.length > 0) {
+      const { error: quickReplyError } = await supabase
+        .from("quick_replies")
+        .insert(cleanedQuickReplies);
+
+      if (quickReplyError) {
+        console.error("Admin create quick replies error:", quickReplyError);
+      }
+    }
+
+    return res.json({
+      success: true,
+      salon,
+      message: "Client setup created successfully.",
+    });
+  } catch (error) {
+    console.error("Admin create client server error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
 });
 
 app.post("/dashboard-send-message", async (req, res) => {
