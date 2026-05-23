@@ -244,6 +244,7 @@ async function getOrCreateConversation(salon, customerNumber) {
         .update({
           status: "open",
           last_activity_at: now,
+          last_reopened_at: now,
         })
         .eq("id", convo.id)
         .select()
@@ -271,6 +272,10 @@ async function getOrCreateConversation(salon, customerNumber) {
       status: "open",
       unread_count: 0,
       last_activity_at: now,
+      last_message_direction: null,
+      last_message_send_status: null,
+      last_message_failure_reason: null,
+      last_message_twilio_sid: null,
     })
     .select()
     .single();
@@ -348,6 +353,10 @@ async function logAutomatedOutboundMessage({
       last_owner_reply_at: now,
       last_activity_at: now,
       last_message: message,
+      last_message_direction: "outbound",
+      last_message_send_status: twilioMessage?.status || "queued",
+      last_message_failure_reason: null,
+      last_message_twilio_sid: twilioMessage?.sid || null,
     })
     .eq("id", convo.id)
     .select()
@@ -566,6 +575,57 @@ app.post("/admin-create-client", async (req, res) => {
   }
 });
 
+app.post("/admin-mark-client-tested", async (req, res) => {
+  try {
+    const adminUser = await getAdminUserFromRequest(req);
+
+    if (!adminUser) {
+      return res.status(403).json({
+        success: false,
+        error: "Not authorized",
+      });
+    }
+
+    const { salon_id } = req.body;
+
+    if (!salon_id) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing salon_id.",
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    const { data: salon, error } = await supabase
+      .from("salons")
+      .update({ last_tested_at: now })
+      .eq("id", salon_id)
+      .select()
+      .single();
+
+    if (error || !salon) {
+      console.error("Mark client tested error:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Could not mark client as tested.",
+      });
+    }
+
+    return res.json({
+      success: true,
+      salon,
+      last_tested_at: now,
+    });
+  } catch (error) {
+    console.error("Admin mark client tested server error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 app.post("/dashboard-send-message", async (req, res) => {
   console.log("DASHBOARD SEND HIT:", req.body);
 
@@ -580,6 +640,7 @@ app.post("/dashboard-send-message", async (req, res) => {
   }
 
   const trimmedMessage = message.trim();
+  const finalMessage = trimmedMessage;
 
   try {
     const { data: salon, error: salonError } = await supabase
@@ -619,7 +680,7 @@ app.post("/dashboard-send-message", async (req, res) => {
     const twilioMessage = await twilioClient.messages.create({
       from: salon.twilio_number,
       to: customer_number,
-      body: trimmedMessage,
+      body: finalMessage,
       statusCallback: getMessageStatusCallbackUrl(),
     });
 
@@ -631,7 +692,7 @@ app.post("/dashboard-send-message", async (req, res) => {
         direction: "outbound",
         from_number: salon.twilio_number,
         to_number: customer_number,
-        body: trimmedMessage,
+        body: finalMessage,
         created_at: now,
         twilio_message_sid: twilioMessage.sid,
         send_status: twilioMessage.status || "queued",
@@ -648,7 +709,11 @@ app.post("/dashboard-send-message", async (req, res) => {
       .update({
         last_owner_reply_at: now,
         last_activity_at: now,
-        last_message: trimmedMessage,
+        last_message: finalMessage,
+        last_message_direction: "outbound",
+        last_message_send_status: twilioMessage.status || "queued",
+        last_message_failure_reason: null,
+        last_message_twilio_sid: twilioMessage.sid,
       })
       .eq("id", convo.id);
 
@@ -762,6 +827,10 @@ app.post("/dashboard-start-conversation", async (req, res) => {
         last_owner_reply_at: now,
         last_activity_at: now,
         last_message: finalMessage,
+        last_message_direction: "outbound",
+        last_message_send_status: twilioMessage.status || "queued",
+        last_message_failure_reason: null,
+        last_message_twilio_sid: twilioMessage.sid,
       })
       .eq("id", convo.id)
       .select()
@@ -781,6 +850,10 @@ app.post("/dashboard-start-conversation", async (req, res) => {
         last_owner_reply_at: now,
         last_activity_at: now,
         last_message: finalMessage,
+        last_message_direction: "outbound",
+        last_message_send_status: twilioMessage.status || "queued",
+        last_message_failure_reason: null,
+        last_message_twilio_sid: twilioMessage.sid,
       },
     });
   } catch (err) {
@@ -852,6 +925,7 @@ app.post("/sms-webhook", async (req, res) => {
 
       const code = match[1];
       const reply = match[2].trim();
+      const finalReply = reply;
 
       if (!reply) {
         await twilioClient.messages.create({
@@ -886,7 +960,7 @@ app.post("/sms-webhook", async (req, res) => {
       const twilioMessage = await twilioClient.messages.create({
         from: to,
         to: convo.customer_number,
-        body: reply,
+        body: finalReply,
         statusCallback: getMessageStatusCallbackUrl(),
       });
 
@@ -896,7 +970,7 @@ app.post("/sms-webhook", async (req, res) => {
         direction: "outbound",
         from_number: to,
         to_number: convo.customer_number,
-        body: reply,
+        body: finalReply,
         created_at: now,
         twilio_message_sid: twilioMessage.sid,
         send_status: twilioMessage.status || "queued",
@@ -907,7 +981,11 @@ app.post("/sms-webhook", async (req, res) => {
         .update({
           last_owner_reply_at: now,
           last_activity_at: now,
-          last_message: reply,
+          last_message: finalReply,
+          last_message_direction: "outbound",
+          last_message_send_status: twilioMessage.status || "queued",
+          last_message_failure_reason: null,
+          last_message_twilio_sid: twilioMessage.sid,
         })
         .eq("id", convo.id);
 
@@ -943,6 +1021,10 @@ app.post("/sms-webhook", async (req, res) => {
           status: "open",
           unread_count: 1,
           last_message: displayBody,
+          last_message_direction: "inbound",
+          last_message_send_status: null,
+          last_message_failure_reason: null,
+          last_message_twilio_sid: null,
           last_customer_message_at: now,
           last_activity_at: now,
         })
@@ -957,6 +1039,7 @@ app.post("/sms-webhook", async (req, res) => {
       convo = data;
     } else {
       const newUnreadCount = (convo.unread_count || 0) + 1;
+      const wasArchived = convo.status === "closed";
 
       const { data: updatedConvo, error: updateError } = await supabase
         .from("conversations")
@@ -964,8 +1047,13 @@ app.post("/sms-webhook", async (req, res) => {
           status: "open",
           unread_count: newUnreadCount,
           last_message: displayBody,
+          last_message_direction: "inbound",
+          last_message_send_status: null,
+          last_message_failure_reason: null,
+          last_message_twilio_sid: null,
           last_customer_message_at: now,
           last_activity_at: now,
+          last_reopened_at: wasArchived ? now : convo.last_reopened_at,
         })
         .eq("id", convo.id)
         .select()
@@ -1036,7 +1124,7 @@ app.post("/voice-webhook", async (req, res) => {
     if (!isSalonOpen(salon)) {
       const closedMessage =
         salon.closed_message ||
-        "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon.";
+        "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.";
 
       await sendAndLogAutomatedMessage({
         salon,
@@ -1095,7 +1183,7 @@ app.post("/call-status", async (req, res) => {
 
     const missedCallMessage =
       salon.open_message ||
-      "Hi! Sorry we missed your call. How can we help?";
+      "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.";
 
     await sendAndLogAutomatedMessage({
       salon,
@@ -1143,13 +1231,38 @@ app.post("/message-status-webhook", async (req, res) => {
       : null,
   };
 
-  const { error } = await supabase
+  const { data: updatedMessages, error } = await supabase
     .from("message_logs")
     .update(updatePayload)
-    .eq("twilio_message_sid", messageSid);
+    .eq("twilio_message_sid", messageSid)
+    .select("id, conversation_id, twilio_message_sid, direction");
 
   if (error) {
     console.error("Message status update error:", error);
+  }
+
+  const updatedMessage = Array.isArray(updatedMessages)
+    ? updatedMessages[0]
+    : null;
+
+  if (updatedMessage?.conversation_id) {
+    const { error: convoStatusError } = await supabase
+      .from("conversations")
+      .update({
+        last_message_send_status: normalizedStatus,
+        last_message_failure_reason: failedStatuses.includes(normalizedStatus)
+          ? getFriendlyStatusFailure(errorCode, errorMessage)
+          : null,
+      })
+      .eq("id", updatedMessage.conversation_id)
+      .eq("last_message_twilio_sid", messageSid);
+
+    if (convoStatusError) {
+      console.error(
+        "Conversation message status update error:",
+        convoStatusError
+      );
+    }
   }
 
   return res.status(200).send("");
