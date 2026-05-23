@@ -1120,35 +1120,21 @@ app.post("/voice-webhook", async (req, res) => {
     }
 
     const VoiceResponse = twilio.twiml.VoiceResponse;
-
-    if (!isSalonOpen(salon)) {
-      const closedMessage =
-        salon.closed_message ||
-        "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.";
-
-      await sendAndLogAutomatedMessage({
-        salon,
-        customerNumber: from,
-        message: closedMessage,
-      });
-
-      const response = new VoiceResponse();
-      response.say("We are currently closed. We just sent you a text message.");
-
-      return res.type("text/xml").send(response.toString());
-    }
-
     const response = new VoiceResponse();
 
-    const dial = response.dial({
-      timeout: salon.ring_timeout_seconds || 10,
-      action: `https://salon-proxy.onrender.com/call-status?from=${encodeURIComponent(
-        from
-      )}&to=${encodeURIComponent(to)}`,
-      method: "POST",
+    const messageToSend = isSalonOpen(salon)
+      ? salon.open_message ||
+        "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out."
+      : salon.closed_message ||
+        "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.";
+
+    await sendAndLogAutomatedMessage({
+      salon,
+      customerNumber: from,
+      message: messageToSend,
     });
 
-    dial.number(salon.owner_phone);
+    response.say("Sorry we missed your call. We just sent you a text message.");
 
     return res.type("text/xml").send(response.toString());
   } catch (err) {
