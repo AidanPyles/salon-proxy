@@ -580,7 +580,6 @@ app.post("/dashboard-send-message", async (req, res) => {
   }
 
   const trimmedMessage = message.trim();
-  const finalMessage = buildFinalSmsMessage(trimmedMessage);
 
   try {
     const { data: salon, error: salonError } = await supabase
@@ -620,7 +619,7 @@ app.post("/dashboard-send-message", async (req, res) => {
     const twilioMessage = await twilioClient.messages.create({
       from: salon.twilio_number,
       to: customer_number,
-      body: finalMessage,
+      body: trimmedMessage,
       statusCallback: getMessageStatusCallbackUrl(),
     });
 
@@ -632,7 +631,7 @@ app.post("/dashboard-send-message", async (req, res) => {
         direction: "outbound",
         from_number: salon.twilio_number,
         to_number: customer_number,
-        body: finalMessage,
+        body: trimmedMessage,
         created_at: now,
         twilio_message_sid: twilioMessage.sid,
         send_status: twilioMessage.status || "queued",
@@ -649,7 +648,7 @@ app.post("/dashboard-send-message", async (req, res) => {
       .update({
         last_owner_reply_at: now,
         last_activity_at: now,
-        last_message: finalMessage,
+        last_message: trimmedMessage,
       })
       .eq("id", convo.id);
 
@@ -853,7 +852,6 @@ app.post("/sms-webhook", async (req, res) => {
 
       const code = match[1];
       const reply = match[2].trim();
-      const finalReply = buildFinalSmsMessage(reply);
 
       if (!reply) {
         await twilioClient.messages.create({
@@ -888,7 +886,7 @@ app.post("/sms-webhook", async (req, res) => {
       const twilioMessage = await twilioClient.messages.create({
         from: to,
         to: convo.customer_number,
-        body: finalReply,
+        body: reply,
         statusCallback: getMessageStatusCallbackUrl(),
       });
 
@@ -898,7 +896,7 @@ app.post("/sms-webhook", async (req, res) => {
         direction: "outbound",
         from_number: to,
         to_number: convo.customer_number,
-        body: finalReply,
+        body: reply,
         created_at: now,
         twilio_message_sid: twilioMessage.sid,
         send_status: twilioMessage.status || "queued",
@@ -909,7 +907,7 @@ app.post("/sms-webhook", async (req, res) => {
         .update({
           last_owner_reply_at: now,
           last_activity_at: now,
-          last_message: finalReply,
+          last_message: reply,
         })
         .eq("id", convo.id);
 
@@ -1038,7 +1036,7 @@ app.post("/voice-webhook", async (req, res) => {
     if (!isSalonOpen(salon)) {
       const closedMessage =
         salon.closed_message ||
-        "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.";
+        "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon.";
 
       await sendAndLogAutomatedMessage({
         salon,
@@ -1097,7 +1095,7 @@ app.post("/call-status", async (req, res) => {
 
     const missedCallMessage =
       salon.open_message ||
-      "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.";
+      "Hi! Sorry we missed your call. How can we help?";
 
     await sendAndLogAutomatedMessage({
       salon,
