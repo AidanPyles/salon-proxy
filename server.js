@@ -34,6 +34,35 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+const PUBLIC_BASE_URL =
+  process.env.PUBLIC_BASE_URL || "https://salon-proxy.onrender.com";
+
+function getMessageStatusCallbackUrl() {
+  return `${PUBLIC_BASE_URL}/message-status-webhook`;
+}
+
+function getFriendlyStatusFailure(errorCode, errorMessage) {
+  const code = errorCode ? String(errorCode) : null;
+  const message = errorMessage || "Message failed to deliver.";
+
+  const friendlyReasons = {
+    "21610": "This customer has opted out by replying STOP.",
+    "21612": "The phone number is not reachable by SMS.",
+    "21614": "This number cannot receive SMS messages.",
+    "30003": "The phone appears unreachable or powered off.",
+    "30004": "The message was blocked by the carrier.",
+    "30005": "The destination number is unknown or inactive.",
+    "30006": "The destination number may be a landline or unreachable.",
+    "30007": "Carrier filtering blocked the message.",
+    "30008": "Twilio could not deliver the message.",
+    "30034": "Carrier filtering or messaging compliance blocked the message.",
+  };
+
+  return code
+    ? friendlyReasons[code] || `Twilio error ${code}: ${message}`
+    : message;
+}
+
 async function getAdminUserFromRequest(req) {
   const authHeader = req.headers.authorization || "";
   const token = authHeader.replace("Bearer ", "");
@@ -262,7 +291,12 @@ async function hasRecentAutomatedOutboundMessage({
   return data && data.length > 0;
 }
 
-async function logAutomatedOutboundMessage({ salon, customerNumber, message }) {
+async function logAutomatedOutboundMessage({
+  salon,
+  customerNumber,
+  message,
+  twilioMessage,
+}) {
   const now = new Date().toISOString();
 
   const convo = await getOrCreateConversation(salon, customerNumber);
@@ -280,6 +314,8 @@ async function logAutomatedOutboundMessage({ salon, customerNumber, message }) {
     to_number: customerNumber,
     body: message,
     created_at: now,
+    twilio_message_sid: twilioMessage?.sid || null,
+    send_status: twilioMessage?.status || "queued",
   });
 
   if (logError) {
@@ -325,16 +361,18 @@ async function sendAndLogAutomatedMessage({ salon, customerNumber, message }) {
     };
   }
 
-  await twilioClient.messages.create({
+  const twilioMessage = await twilioClient.messages.create({
     from: salon.twilio_number,
     to: customerNumber,
     body: message,
+    statusCallback: getMessageStatusCallbackUrl(),
   });
 
   await logAutomatedOutboundMessage({
     salon,
     customerNumber,
     message,
+    twilioMessage,
   });
 
   return {
@@ -372,6 +410,7 @@ app.post("/admin-create-client", async (req, res) => {
       close_time,
       always_open,
       owner_sms_alerts_enabled,
+      auto_archive_days,
       quick_replies,
     } = req.body;
 
@@ -435,6 +474,9 @@ app.post("/admin-create-client", async (req, res) => {
         active: true,
         owner_sms_alerts_enabled:
           owner_sms_alerts_enabled === false ? false : true,
+        auto_archive_days: Number.isFinite(Number(auto_archive_days))
+          ? Number(auto_archive_days)
+          : 7,
       })
       .select()
       .single();
@@ -552,21 +594,32 @@ app.post("/dashboard-send-message", async (req, res) => {
 
     const now = new Date().toISOString();
 
-    await twilioClient.messages.create({
+    const twilioMessage = await twilioClient.messages.create({
       from: salon.twilio_number,
       to: customer_number,
       body: trimmedMessage,
+      statusCallback: getMessageStatusCallbackUrl(),
     });
 
-    await supabase.from("message_logs").insert({
-      salon_id: salon.id,
-      conversation_id: convo.id,
-      direction: "outbound",
-      from_number: salon.twilio_number,
-      to_number: customer_number,
-      body: trimmedMessage,
-      created_at: now,
-    });
+    const { data: messageLog, error: messageLogError } = await supabase
+      .from("message_logs")
+      .insert({
+        salon_id: salon.id,
+        conversation_id: convo.id,
+        direction: "outbound",
+        from_number: salon.twilio_number,
+        to_number: customer_number,
+        body: trimmedMessage,
+        created_at: now,
+        twilio_message_sid: twilioMessage.sid,
+        send_status: twilioMessage.status || "queued",
+      })
+      .select()
+      .single();
+
+    if (messageLogError) {
+      console.error("Dashboard message log error:", messageLogError);
+    }
 
     await supabase
       .from("conversations")
@@ -580,6 +633,7 @@ app.post("/dashboard-send-message", async (req, res) => {
     return res.json({
       success: true,
       message: "Message sent successfully",
+      message_log: messageLog || null,
     });
   } catch (err) {
     const errorDetails = getFriendlySendError(err);
@@ -651,21 +705,32 @@ app.post("/dashboard-start-conversation", async (req, res) => {
 
     const now = new Date().toISOString();
 
-    await twilioClient.messages.create({
+    const twilioMessage = await twilioClient.messages.create({
       from: salon.twilio_number,
       to: normalizedCustomerNumber,
       body: trimmedMessage,
+      statusCallback: getMessageStatusCallbackUrl(),
     });
 
-    await supabase.from("message_logs").insert({
-      salon_id: salon.id,
-      conversation_id: convo.id,
-      direction: "outbound",
-      from_number: salon.twilio_number,
-      to_number: normalizedCustomerNumber,
-      body: trimmedMessage,
-      created_at: now,
-    });
+    const { data: messageLog, error: messageLogError } = await supabase
+      .from("message_logs")
+      .insert({
+        salon_id: salon.id,
+        conversation_id: convo.id,
+        direction: "outbound",
+        from_number: salon.twilio_number,
+        to_number: normalizedCustomerNumber,
+        body: trimmedMessage,
+        created_at: now,
+        twilio_message_sid: twilioMessage.sid,
+        send_status: twilioMessage.status || "queued",
+      })
+      .select()
+      .single();
+
+    if (messageLogError) {
+      console.error("Start conversation message log error:", messageLogError);
+    }
 
     const { data: updatedConvo, error: updateError } = await supabase
       .from("conversations")
@@ -686,6 +751,7 @@ app.post("/dashboard-start-conversation", async (req, res) => {
     return res.json({
       success: true,
       message: "Conversation started successfully.",
+      message_log: messageLog || null,
       conversation: updatedConvo || {
         ...convo,
         status: "open",
@@ -794,10 +860,11 @@ app.post("/sms-webhook", async (req, res) => {
         return res.send("");
       }
 
-      await twilioClient.messages.create({
+      const twilioMessage = await twilioClient.messages.create({
         from: to,
         to: convo.customer_number,
         body: reply,
+        statusCallback: getMessageStatusCallbackUrl(),
       });
 
       await supabase.from("message_logs").insert({
@@ -808,6 +875,8 @@ app.post("/sms-webhook", async (req, res) => {
         to_number: convo.customer_number,
         body: reply,
         created_at: now,
+        twilio_message_sid: twilioMessage.sid,
+        send_status: twilioMessage.status || "queued",
       });
 
       await supabase
@@ -1021,6 +1090,46 @@ app.post("/call-status", async (req, res) => {
     console.error("Call status error:", err);
     return res.type("text/xml").send("<Response></Response>");
   }
+});
+
+app.post("/message-status-webhook", async (req, res) => {
+  console.log("MESSAGE STATUS WEBHOOK HIT:", req.body);
+
+  const messageSid =
+    req.body.MessageSid || req.body.SmsSid || req.body.SmsMessageSid;
+  const messageStatus = req.body.MessageStatus || req.body.SmsStatus;
+  const errorCode = req.body.ErrorCode || null;
+  const errorMessage =
+    req.body.ErrorMessage || req.body.MessageStatusMessage || null;
+
+  if (!messageSid || !messageStatus) {
+    return res.status(200).send("");
+  }
+
+  const normalizedStatus = String(messageStatus).toLowerCase();
+  const failedStatuses = ["failed", "undelivered"];
+
+  const updatePayload = {
+    send_status: normalizedStatus,
+    failure_code: failedStatuses.includes(normalizedStatus) ? errorCode : null,
+    failure_reason: failedStatuses.includes(normalizedStatus)
+      ? getFriendlyStatusFailure(errorCode, errorMessage)
+      : null,
+    error_message: failedStatuses.includes(normalizedStatus)
+      ? errorMessage
+      : null,
+  };
+
+  const { error } = await supabase
+    .from("message_logs")
+    .update(updatePayload)
+    .eq("twilio_message_sid", messageSid);
+
+  if (error) {
+    console.error("Message status update error:", error);
+  }
+
+  return res.status(200).send("");
 });
 
 app.get("/media-proxy", async (req, res) => {
