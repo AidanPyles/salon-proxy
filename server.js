@@ -74,6 +74,35 @@ function generateCode() {
   return Math.floor(10000 + Math.random() * 90000).toString();
 }
 
+function getFriendlySendError(error) {
+  const code = error?.code ? String(error.code) : null;
+  const message = error?.message || "Message failed to send.";
+
+  const friendlyReasons = {
+    "21211": "Invalid phone number.",
+    "21408": "Twilio is not allowed to send messages to this region.",
+    "21610": "This customer has opted out by replying STOP.",
+    "21612": "The phone number is not reachable by SMS.",
+    "21614": "This number cannot receive SMS messages.",
+    "30003": "The phone appears unreachable or powered off.",
+    "30004": "The message was blocked by the carrier.",
+    "30005": "The destination number is unknown or inactive.",
+    "30006": "The destination number may be a landline or unreachable.",
+    "30007": "Carrier filtering blocked the message.",
+    "30008": "Twilio could not deliver the message.",
+    "30034": "Carrier filtering or messaging compliance blocked the message.",
+  };
+
+  return {
+    error: "Message failed to send.",
+    failure_reason: code
+      ? friendlyReasons[code] || `Twilio error ${code}: ${message}`
+      : message,
+    twilio_code: code,
+    twilio_message: message,
+  };
+}
+
 function isSalonOpen(salon) {
   if (salon.always_open === true) {
     return true;
@@ -116,12 +145,10 @@ function isSalonOpen(salon) {
 
   if (!today || !openDays.includes(today)) return false;
 
-  // Normal same-day hours, example: 09:00 to 17:00
   if (openTime <= closeTime) {
     return currentTime >= openTime && currentTime <= closeTime;
   }
 
-  // Overnight / almost-all-day hours, example: 09:00 to 08:59
   return currentTime >= openTime || currentTime <= closeTime;
 }
 
@@ -464,6 +491,7 @@ app.post("/dashboard-send-message", async (req, res) => {
     return res.status(400).json({
       success: false,
       error: "Missing salon_id, customer_number, or message",
+      failure_reason: "Missing salon ID, customer number, or message.",
     });
   }
 
@@ -481,6 +509,7 @@ app.post("/dashboard-send-message", async (req, res) => {
       return res.status(404).json({
         success: false,
         error: "Salon not found",
+        failure_reason: "Salon not found.",
       });
     }
 
@@ -497,12 +526,13 @@ app.post("/dashboard-send-message", async (req, res) => {
       return res.status(404).json({
         success: false,
         error: "Conversation not found",
+        failure_reason: "Conversation not found or archived.",
       });
     }
 
     const now = new Date().toISOString();
 
-    await twilioClient.messages.create({
+    const sentMessage = await twilioClient.messages.create({
       from: salon.twilio_number,
       to: customer_number,
       body: trimmedMessage,
@@ -516,6 +546,7 @@ app.post("/dashboard-send-message", async (req, res) => {
       to_number: customer_number,
       body: trimmedMessage,
       created_at: now,
+      twilio_message_sid: sentMessage.sid || null,
     });
 
     await supabase
@@ -530,12 +561,21 @@ app.post("/dashboard-send-message", async (req, res) => {
     return res.json({
       success: true,
       message: "Message sent successfully",
+      twilio_message_sid: sentMessage.sid || null,
     });
   } catch (err) {
-    console.error("Dashboard send error:", err);
+    const errorDetails = getFriendlySendError(err);
+
+    console.error("Dashboard send error:", {
+      message: err?.message,
+      code: err?.code,
+      status: err?.status,
+      moreInfo: err?.moreInfo,
+    });
+
     return res.status(500).json({
       success: false,
-      error: err.message,
+      ...errorDetails,
     });
   }
 });
@@ -576,7 +616,6 @@ app.post("/sms-webhook", async (req, res) => {
 
     const owner = salon.owner_phone;
 
-    // OWNER REPLY FLOW
     if (from === owner) {
       const match = body.match(/^@(\d{5})\s+([\s\S]+)/);
 
@@ -651,7 +690,6 @@ app.post("/sms-webhook", async (req, res) => {
       return res.send("");
     }
 
-    // CUSTOMER INBOUND MESSAGE FLOW
     const now = new Date().toISOString();
 
     let { data: convo, error: convoLookupError } = await supabase
