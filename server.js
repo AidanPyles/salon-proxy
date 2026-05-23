@@ -37,6 +37,25 @@ const supabase = createClient(
 const PUBLIC_BASE_URL =
   process.env.PUBLIC_BASE_URL || "https://salon-proxy.onrender.com";
 
+const COMPLIANCE_FOOTER = "Reply STOP to opt out.";
+
+function stripComplianceFooter(message) {
+  if (!message) return "";
+
+  return String(message)
+    .replace(/reply stop to opt out\.?/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildFinalSmsMessage(message) {
+  const cleanedMessage = stripComplianceFooter(message);
+
+  if (!cleanedMessage) return COMPLIANCE_FOOTER;
+
+  return `${cleanedMessage} ${COMPLIANCE_FOOTER}`;
+}
+
 function getMessageStatusCallbackUrl() {
   return `${PUBLIC_BASE_URL}/message-status-webhook`;
 }
@@ -343,10 +362,12 @@ async function logAutomatedOutboundMessage({
 }
 
 async function sendAndLogAutomatedMessage({ salon, customerNumber, message }) {
+  const finalMessage = buildFinalSmsMessage(message);
+
   const alreadySentRecently = await hasRecentAutomatedOutboundMessage({
     salon,
     customerNumber,
-    message,
+    message: finalMessage,
     minutes: 5,
   });
 
@@ -364,14 +385,14 @@ async function sendAndLogAutomatedMessage({ salon, customerNumber, message }) {
   const twilioMessage = await twilioClient.messages.create({
     from: salon.twilio_number,
     to: customerNumber,
-    body: message,
+    body: finalMessage,
     statusCallback: getMessageStatusCallbackUrl(),
   });
 
   await logAutomatedOutboundMessage({
     salon,
     customerNumber,
-    message,
+    message: finalMessage,
     twilioMessage,
   });
 
@@ -459,12 +480,13 @@ app.post("/admin-create-client", async (req, res) => {
         owner_phone: owner_phone.trim(),
         twilio_number: twilio_number.trim(),
         booking_link: booking_link?.trim() || "",
-        open_message:
-          open_message?.trim() ||
-          "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.",
-        closed_message:
-          closed_message?.trim() ||
-          "Hi! We're currently closed but will get back to you soon. Reply STOP to opt out.",
+        open_message: buildFinalSmsMessage(
+          open_message || "Hi! Sorry we missed your call. How can we help?"
+        ),
+        closed_message: buildFinalSmsMessage(
+          closed_message ||
+            "Hi! We're currently closed but will get back to you soon."
+        ),
         ring_timeout_seconds: 10,
         timezone: timezone || "America/Los_Angeles",
         open_days: open_days || "1,2,3,4,5",
@@ -558,6 +580,7 @@ app.post("/dashboard-send-message", async (req, res) => {
   }
 
   const trimmedMessage = message.trim();
+  const finalMessage = buildFinalSmsMessage(trimmedMessage);
 
   try {
     const { data: salon, error: salonError } = await supabase
@@ -597,7 +620,7 @@ app.post("/dashboard-send-message", async (req, res) => {
     const twilioMessage = await twilioClient.messages.create({
       from: salon.twilio_number,
       to: customer_number,
-      body: trimmedMessage,
+      body: finalMessage,
       statusCallback: getMessageStatusCallbackUrl(),
     });
 
@@ -609,7 +632,7 @@ app.post("/dashboard-send-message", async (req, res) => {
         direction: "outbound",
         from_number: salon.twilio_number,
         to_number: customer_number,
-        body: trimmedMessage,
+        body: finalMessage,
         created_at: now,
         twilio_message_sid: twilioMessage.sid,
         send_status: twilioMessage.status || "queued",
@@ -626,7 +649,7 @@ app.post("/dashboard-send-message", async (req, res) => {
       .update({
         last_owner_reply_at: now,
         last_activity_at: now,
-        last_message: trimmedMessage,
+        last_message: finalMessage,
       })
       .eq("id", convo.id);
 
@@ -667,6 +690,7 @@ app.post("/dashboard-start-conversation", async (req, res) => {
 
   const normalizedCustomerNumber = normalizePhoneNumber(customer_number);
   const trimmedMessage = message.trim();
+  const finalMessage = buildFinalSmsMessage(trimmedMessage);
 
   if (!/^\+[1-9]\d{7,14}$/.test(normalizedCustomerNumber)) {
     return res.status(400).json({
@@ -708,7 +732,7 @@ app.post("/dashboard-start-conversation", async (req, res) => {
     const twilioMessage = await twilioClient.messages.create({
       from: salon.twilio_number,
       to: normalizedCustomerNumber,
-      body: trimmedMessage,
+      body: finalMessage,
       statusCallback: getMessageStatusCallbackUrl(),
     });
 
@@ -720,7 +744,7 @@ app.post("/dashboard-start-conversation", async (req, res) => {
         direction: "outbound",
         from_number: salon.twilio_number,
         to_number: normalizedCustomerNumber,
-        body: trimmedMessage,
+        body: finalMessage,
         created_at: now,
         twilio_message_sid: twilioMessage.sid,
         send_status: twilioMessage.status || "queued",
@@ -738,7 +762,7 @@ app.post("/dashboard-start-conversation", async (req, res) => {
         status: "open",
         last_owner_reply_at: now,
         last_activity_at: now,
-        last_message: trimmedMessage,
+        last_message: finalMessage,
       })
       .eq("id", convo.id)
       .select()
@@ -757,7 +781,7 @@ app.post("/dashboard-start-conversation", async (req, res) => {
         status: "open",
         last_owner_reply_at: now,
         last_activity_at: now,
-        last_message: trimmedMessage,
+        last_message: finalMessage,
       },
     });
   } catch (err) {
@@ -829,6 +853,7 @@ app.post("/sms-webhook", async (req, res) => {
 
       const code = match[1];
       const reply = match[2].trim();
+      const finalReply = buildFinalSmsMessage(reply);
 
       if (!reply) {
         await twilioClient.messages.create({
@@ -863,7 +888,7 @@ app.post("/sms-webhook", async (req, res) => {
       const twilioMessage = await twilioClient.messages.create({
         from: to,
         to: convo.customer_number,
-        body: reply,
+        body: finalReply,
         statusCallback: getMessageStatusCallbackUrl(),
       });
 
@@ -873,7 +898,7 @@ app.post("/sms-webhook", async (req, res) => {
         direction: "outbound",
         from_number: to,
         to_number: convo.customer_number,
-        body: reply,
+        body: finalReply,
         created_at: now,
         twilio_message_sid: twilioMessage.sid,
         send_status: twilioMessage.status || "queued",
@@ -884,7 +909,7 @@ app.post("/sms-webhook", async (req, res) => {
         .update({
           last_owner_reply_at: now,
           last_activity_at: now,
-          last_message: reply,
+          last_message: finalReply,
         })
         .eq("id", convo.id);
 
