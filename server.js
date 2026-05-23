@@ -74,6 +74,26 @@ function generateCode() {
   return Math.floor(10000 + Math.random() * 90000).toString();
 }
 
+function normalizePhoneNumber(value) {
+  const raw = String(value || "").trim();
+
+  if (raw.startsWith("+")) {
+    return raw.replace(/[^\d+]/g, "");
+  }
+
+  const digits = raw.replace(/\D/g, "");
+
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+
+  return raw;
+}
+
 function getFriendlySendError(error) {
   const code = error?.code ? String(error.code) : null;
   const message = error?.message || "Message failed to send.";
@@ -532,7 +552,7 @@ app.post("/dashboard-send-message", async (req, res) => {
 
     const now = new Date().toISOString();
 
-    const sentMessage = await twilioClient.messages.create({
+    await twilioClient.messages.create({
       from: salon.twilio_number,
       to: customer_number,
       body: trimmedMessage,
@@ -546,7 +566,6 @@ app.post("/dashboard-send-message", async (req, res) => {
       to_number: customer_number,
       body: trimmedMessage,
       created_at: now,
-      twilio_message_sid: sentMessage.sid || null,
     });
 
     await supabase
@@ -561,12 +580,124 @@ app.post("/dashboard-send-message", async (req, res) => {
     return res.json({
       success: true,
       message: "Message sent successfully",
-      twilio_message_sid: sentMessage.sid || null,
     });
   } catch (err) {
     const errorDetails = getFriendlySendError(err);
 
     console.error("Dashboard send error:", {
+      message: err?.message,
+      code: err?.code,
+      status: err?.status,
+      moreInfo: err?.moreInfo,
+    });
+
+    return res.status(500).json({
+      success: false,
+      ...errorDetails,
+    });
+  }
+});
+
+app.post("/dashboard-start-conversation", async (req, res) => {
+  console.log("DASHBOARD START CONVERSATION HIT:", req.body);
+
+  const { salon_id, customer_number, message } = req.body;
+
+  if (!salon_id || !customer_number || !message || !message.trim()) {
+    return res.status(400).json({
+      success: false,
+      error: "Missing salon_id, customer_number, or message",
+      failure_reason: "Missing salon ID, customer number, or message.",
+    });
+  }
+
+  const normalizedCustomerNumber = normalizePhoneNumber(customer_number);
+  const trimmedMessage = message.trim();
+
+  if (!/^\+[1-9]\d{7,14}$/.test(normalizedCustomerNumber)) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid phone number",
+      failure_reason:
+        "Enter a valid phone number with area code, like 7605551234 or +17605551234.",
+    });
+  }
+
+  try {
+    const { data: salon, error: salonError } = await supabase
+      .from("salons")
+      .select("*")
+      .eq("id", salon_id)
+      .single();
+
+    if (salonError || !salon) {
+      console.error("Start conversation salon lookup error:", salonError);
+      return res.status(404).json({
+        success: false,
+        error: "Salon not found",
+        failure_reason: "Salon not found.",
+      });
+    }
+
+    const convo = await getOrCreateConversation(salon, normalizedCustomerNumber);
+
+    if (!convo) {
+      return res.status(500).json({
+        success: false,
+        error: "Could not create conversation",
+        failure_reason: "Could not create or reopen the conversation.",
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    await twilioClient.messages.create({
+      from: salon.twilio_number,
+      to: normalizedCustomerNumber,
+      body: trimmedMessage,
+    });
+
+    await supabase.from("message_logs").insert({
+      salon_id: salon.id,
+      conversation_id: convo.id,
+      direction: "outbound",
+      from_number: salon.twilio_number,
+      to_number: normalizedCustomerNumber,
+      body: trimmedMessage,
+      created_at: now,
+    });
+
+    const { data: updatedConvo, error: updateError } = await supabase
+      .from("conversations")
+      .update({
+        status: "open",
+        last_owner_reply_at: now,
+        last_activity_at: now,
+        last_message: trimmedMessage,
+      })
+      .eq("id", convo.id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error("Start conversation update error:", updateError);
+    }
+
+    return res.json({
+      success: true,
+      message: "Conversation started successfully.",
+      conversation: updatedConvo || {
+        ...convo,
+        status: "open",
+        last_owner_reply_at: now,
+        last_activity_at: now,
+        last_message: trimmedMessage,
+      },
+    });
+  } catch (err) {
+    const errorDetails = getFriendlySendError(err);
+
+    console.error("Dashboard start conversation error:", {
       message: err?.message,
       code: err?.code,
       status: err?.status,
@@ -616,6 +747,7 @@ app.post("/sms-webhook", async (req, res) => {
 
     const owner = salon.owner_phone;
 
+    // OWNER REPLY FLOW
     if (from === owner) {
       const match = body.match(/^@(\d{5})\s+([\s\S]+)/);
 
@@ -690,6 +822,7 @@ app.post("/sms-webhook", async (req, res) => {
       return res.send("");
     }
 
+    // CUSTOMER INBOUND MESSAGE FLOW
     const now = new Date().toISOString();
 
     let { data: convo, error: convoLookupError } = await supabase
