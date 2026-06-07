@@ -1122,11 +1122,17 @@ app.post("/voice-webhook", async (req, res) => {
     const VoiceResponse = twilio.twiml.VoiceResponse;
     const response = new VoiceResponse();
 
-    const messageToSend = isSalonOpen(salon)
+    const salonIsOpen = isSalonOpen(salon);
+
+    const messageToSend = salonIsOpen
       ? salon.open_message ||
         "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out."
       : salon.closed_message ||
         "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.";
+
+    const voiceMessage = salonIsOpen
+      ? "Sorry we missed your call. We just sent you a text message."
+      : "Thanks for calling. We're currently closed, but we just sent you a text.";
 
     await sendAndLogAutomatedMessage({
       salon,
@@ -1134,7 +1140,7 @@ app.post("/voice-webhook", async (req, res) => {
       message: messageToSend,
     });
 
-    response.say("Sorry we missed your call. We just sent you a text message.");
+    response.say(voiceMessage);
 
     return res.type("text/xml").send(response.toString());
   } catch (err) {
@@ -1167,9 +1173,13 @@ app.post("/call-status", async (req, res) => {
       return res.type("text/xml").send("<Response></Response>");
     }
 
-    const missedCallMessage =
-      salon.open_message ||
-      "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out.";
+    const salonIsOpen = isSalonOpen(salon);
+
+    const missedCallMessage = salonIsOpen
+      ? salon.open_message ||
+        "Hi! Sorry we missed your call. How can we help? Reply STOP to opt out."
+      : salon.closed_message ||
+        "Hi! Thanks for calling. We’re currently closed, but we’ll get back to you soon. Reply STOP to opt out.";
 
     await sendAndLogAutomatedMessage({
       salon,
@@ -1180,7 +1190,11 @@ app.post("/call-status", async (req, res) => {
     const VoiceResponse = twilio.twiml.VoiceResponse;
     const response = new VoiceResponse();
 
-    response.say("Sorry we missed your call. We just sent you a text message.");
+    const voiceMessage = salonIsOpen
+      ? "Sorry we missed your call. We just sent you a text message."
+      : "Thanks for calling. We're currently closed, but we just sent you a text.";
+
+    response.say(voiceMessage);
 
     return res.type("text/xml").send(response.toString());
   } catch (err) {
